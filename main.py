@@ -68,4 +68,7 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    # httpx пишет полный адрес запроса, а в адресах Telegram и Битрикса лежат токены
+    for noisy in ("httpx", "httpx2", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     asyncio.run(main())
