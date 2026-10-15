@@ -71,7 +71,7 @@ def agent_payload(key: str, base: str) -> dict:
     if key == "teamlead":
         # Запись в Битрикс — только после кнопки владельца в Telegram
         mcp_tools["configs"] = [{"name": n, "permission_policy": {"type": "always_ask"}}
-                                for n in ("send_message", "create_task")]
+                                for n in ("send_message", "create_task", "comment_task")]
     tools: list[dict] = [mcp_tools]
     if meta.get("toolset") == "true":  # бухгалтеру нужен код для расчётов, без интернета
         tools.append({

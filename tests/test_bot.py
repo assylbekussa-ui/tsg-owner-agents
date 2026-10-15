@@ -31,7 +31,7 @@ class FakeLead:
         self.asked.append((chat_key, text))
         progress("подключён агент: Производство")
         if "напиши" in text and confirm:
-            ok = confirm({"tool": "send_message", "input": {"user_id": 45, "text": "Раушан, проверьте OP-14"}})
+            ok = confirm({"tool": "send_message", "input": {"dialog_id": "45", "text": "Раушан, проверьте OP-14"}})
             return "Отправлено" if ok else "Отменено владельцем"
         return "ФОТ: 5 830 000 ₸\nТребует решения: OP-14"
 

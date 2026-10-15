@@ -127,14 +127,26 @@ def build_role_server(role_key: str, svc: DataService) -> MCPServer:
             return await run("disk_search", {"query": query}, svc.disk_search(role_key, query, limit))
 
     if role.writes:
+        @server.tool(description="Групповые чаты Битрикса, в которых состоит владелец кабинета: dialog_id и название.")
+        async def list_chats() -> list:
+            return await run("list_chats", {}, svc.list_chats(role_key))
+
         @server.tool(description=(
-            "Отправить сотруднику личное сообщение в чат Битрикса от имени владельца кабинета. "
-            "user_id — ID из list_employees. Перед отправкой владелец видит текст и подтверждает его кнопкой; "
-            "если он отказал — сообщение не отправлено, не повторяй без новой просьбы."
+            "Отправить сообщение в Битрикс-чат от имени владельца кабинета. dialog_id — ID сотрудника "
+            "из list_employees (личное сообщение) или ID группового чата вида chat123 из list_chats. "
+            "Перед отправкой владелец видит текст и подтверждает его кнопкой; если отказал — не повторяй."
         ))
-        async def send_message(user_id: int, text: str) -> dict:
-            return await run("send_message", {"user_id": user_id, "text": text[:300]},
-                             svc.send_message(role_key, user_id, text))
+        async def send_message(dialog_id: str, text: str) -> dict:
+            return await run("send_message", {"dialog_id": dialog_id, "text": text[:300]},
+                             svc.send_message(role_key, dialog_id, text))
+
+        @server.tool(description=(
+            "Написать комментарий в задачу Битрикса (его видят исполнитель, постановщик и наблюдатели). "
+            "task_id — номер задачи. Владелец подтверждает кнопкой."
+        ))
+        async def comment_task(task_id: int, text: str) -> dict:
+            return await run("comment_task", {"task_id": task_id, "text": text[:300]},
+                             svc.comment_task(role_key, task_id, text))
 
         @server.tool(description=(
             "Поставить задачу в Битриксе от имени владельца кабинета. responsible_id — ID исполнителя "

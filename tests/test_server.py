@@ -47,6 +47,11 @@ def fake_bitrix(request: httpx.Request) -> httpx.Response:
     if method == "user.get":
         return httpx.Response(200, json={"result": [{"ID": "239", "NAME": "Асылбек", "LAST_NAME": "Кожахметов"},
                                                     {"ID": "45", "NAME": "Раушан", "LAST_NAME": "Баясилова"}]})
+    if method == "im.recent.list":
+        return httpx.Response(200, json={"result": {"items": [{"id": "chat27", "type": "chat", "title": "Общий чат TSG"},
+                                                             {"id": "45", "type": "user", "title": "Раушан"}]}})
+    if method == "task.commentitem.add":
+        return httpx.Response(200, json={"result": 555})
     if method == "im.message.add":
         return httpx.Response(200, json={"result": 777})
     if method == "tasks.task.add":
@@ -167,13 +172,13 @@ def test_tool_call_over_http_hides_money():
 def test_only_teamlead_writes_and_only_to_real_people():
     svc = service()
     CALLS.clear()
-    res = asyncio.run(svc.send_message("teamlead", 45, "Раушан, проверьте OP-14"))
-    assert res["кому"] == "Раушан Баясилова"
+    res = asyncio.run(svc.send_message("teamlead", "45", "Раушан, проверьте OP-14"))
+    assert res["куда"] == "Раушан Баясилова"
     assert ("im.message.add", {"DIALOG_ID": "45", "MESSAGE": "Раушан, проверьте OP-14"}) in CALLS
     with pytest.raises(AccessDenied):
-        asyncio.run(svc.send_message("production", 45, "привет"))
+        asyncio.run(svc.send_message("production", "45", "привет"))
     with pytest.raises(AccessDenied):
-        asyncio.run(svc.send_message("teamlead", 99999, "кому-то"))
+        asyncio.run(svc.send_message("teamlead", "99999", "кому-то"))
     task = asyncio.run(svc.create_task("teamlead", 45, "Проверить OP-14", "Невыходы", "2026-10-17T18:00:00+05:00"))
     assert task["id_задачи"] == "901" and task["ссылка"].endswith("/tasks/task/view/901/")
 
@@ -196,3 +201,16 @@ def test_write_tools_exist_only_for_teamlead():
     prod = {t.name for t in asyncio.run(build_role_server("production", svc).list_tools())}
     assert {"send_message", "create_task", "disk_list"} <= lead
     assert "send_message" not in prod and "disk_search" in prod
+
+
+
+def test_group_chat_and_task_comment():
+    svc = service()
+    CALLS.clear()
+    res = asyncio.run(svc.send_message("teamlead", "chat27", "Коллеги, сводка готова"))
+    assert res["куда"] == "чат «Общий чат TSG»"
+    with pytest.raises(AccessDenied):
+        asyncio.run(svc.send_message("teamlead", "chat999", "в чужой чат"))
+    out = asyncio.run(svc.comment_task("teamlead", 4765, "Прошу принять в работу"))
+    assert out["задача"] == 4765
+    assert ("task.commentitem.add", {"TASKID": 4765, "FIELDS": {"POST_MESSAGE": "Прошу принять в работу"}}) in CALLS

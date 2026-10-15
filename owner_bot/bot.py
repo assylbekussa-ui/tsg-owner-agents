@@ -52,8 +52,11 @@ def describe_action(action: dict, names: dict[str, str]) -> str:
     args = action.get("input") or {}
     tool = action.get("tool", "")
     if tool == "send_message":
-        who = names.get(str(args.get("user_id")), f"ID {args.get('user_id')}")
-        return f"✉️ Сообщение в Битрикс-чат\nКому: {who}\n\n{args.get('text', '')}"
+        dialog = str(args.get("dialog_id", args.get("user_id", "")))
+        who = f"групповой чат {dialog}" if dialog.startswith("chat") else names.get(dialog, f"ID {dialog}")
+        return f"✉️ Сообщение в Битрикс-чат\nКуда: {who}\n\n{args.get('text', '')}"
+    if tool == "comment_task":
+        return f"💬 Комментарий в задачу #{args.get('task_id')}\n\n{args.get('text', '')}"
     if tool == "create_task":
         who = names.get(str(args.get("responsible_id")), f"ID {args.get('responsible_id')}")
         deadline = args.get("deadline") or "без срока"

@@ -29,11 +29,12 @@ READ_ONLY_METHODS = frozenset(
         "disk.folder.getchildren",
         "disk.folder.get",
         "disk.file.get",
+        "im.recent.list",
     }
 )
 # Запись: только эти два действия и только через write() — его вызывают инструменты Тимлида,
 # каждый вызов которых владелец подтверждает кнопкой в Telegram.
-WRITE_METHODS = frozenset({"im.message.add", "tasks.task.add"})
+WRITE_METHODS = frozenset({"im.message.add", "tasks.task.add", "task.commentitem.add"})
 
 PAGE = 50  # Битрикс отдаёт по 50 записей за запрос
 

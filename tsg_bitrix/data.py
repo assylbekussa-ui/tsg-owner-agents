@@ -276,13 +276,35 @@ class DiskAndWrites:
         if not ROLES[role_key].writes:
             raise AccessDenied("Эта роль не может писать в Битрикс.")
 
-    async def send_message(self, role_key: str, user_id: int, text: str) -> dict[str, Any]:
+    async def list_chats(self, role_key: str) -> list[dict[str, Any]]:
+        """Групповые чаты, в которых состоит владелец кабинета."""
+        self._require_writes(role_key)
+        data = await self.bx.call("im.recent.list", {"SKIP_OPENLINES": "Y", "SKIP_DIALOG": "Y"})
+        items = (data.get("result") or {}).get("items", [])
+        return [{"dialog_id": str(i.get("id")), "название": i.get("title")}
+                for i in items if i.get("type") == "chat"]
+
+    async def send_message(self, role_key: str, dialog_id: str, text: str) -> dict[str, Any]:
         self._require_writes(role_key)
         if not text.strip():
             raise AccessDenied("Пустое сообщение не отправляется.")
-        user = await self._user(user_id)
-        data = await self.bx.write("im.message.add", {"DIALOG_ID": str(user_id), "MESSAGE": text})
-        return {"отправлено": True, "кому": user["имя"], "id_сообщения": data.get("result")}
+        dialog_id = str(dialog_id).strip()
+        if dialog_id.startswith("chat"):
+            chats = {c["dialog_id"]: c["название"] for c in await self.list_chats(role_key)}
+            if dialog_id not in chats:
+                raise AccessDenied(f"Чат {dialog_id} не найден среди чатов владельца (list_chats).")
+            target = f"чат «{chats[dialog_id]}»"
+        else:
+            target = (await self._user(int(dialog_id)))["имя"]
+        data = await self.bx.write("im.message.add", {"DIALOG_ID": dialog_id, "MESSAGE": text})
+        return {"отправлено": True, "куда": target, "id_сообщения": data.get("result")}
+
+    async def comment_task(self, role_key: str, task_id: int, text: str) -> dict[str, Any]:
+        self._require_writes(role_key)
+        if not text.strip():
+            raise AccessDenied("Пустой комментарий не отправляется.")
+        data = await self.bx.write("task.commentitem.add", {"TASKID": task_id, "FIELDS": {"POST_MESSAGE": text}})
+        return {"комментарий_добавлен": True, "задача": task_id, "id_комментария": data.get("result")}
 
     async def create_task(self, role_key: str, responsible_id: int, title: str, description: str,
                           deadline: str | None) -> dict[str, Any]:
