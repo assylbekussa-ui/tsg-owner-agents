@@ -1,7 +1,7 @@
 """MCP-сервер «tsg-bitrix»: отдельный адрес и токен для каждого агента.
 
 Адрес агента:  https://<хост>/<роль>/mcp   (роль: teamlead, production, account, accountant …)
-Токен агента:  переменная окружения MCP_TOKEN_<РОЛЬ>, передаётся как Bearer.
+Токен агента:  MCP_TOKEN_<РОЛЬ> или выводится из ANTHROPIC_API_KEY (см. provision.role_token), передаётся как Bearer.
 Агент с одной ролью не может обратиться к адресу другой роли: токен не подойдёт.
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ from starlette.routing import Mount, Route
 from .bitrix import BitrixClient
 from .data import TZ, AccessDenied, DataService
 from .policy import ENTITY_TITLES, ROLES, STAGE_2_ROLES
+from .provision import role_token
 
 log = logging.getLogger("tsg-bitrix")
 JOURNAL_PATH = os.getenv("JOURNAL_PATH")
@@ -141,10 +142,10 @@ class BearerPerRole:
 def create_app(client: BitrixClient | None = None, roles: tuple[str, ...] | None = None,
                tokens: dict[str, str] | None = None) -> Any:
     roles = roles or tuple(os.getenv("ENABLED_ROLES", ",".join(STAGE_2_ROLES)).split(","))
-    tokens = tokens if tokens is not None else {r: os.getenv(f"MCP_TOKEN_{r.upper()}", "") for r in roles}
+    tokens = tokens if tokens is not None else {r: role_token(r) for r in roles}
     missing = [r for r in roles if not tokens.get(r)]
     if missing:
-        raise RuntimeError(f"Не заданы токены: {', '.join('MCP_TOKEN_' + r.upper() for r in missing)}")
+        raise RuntimeError("Нет ANTHROPIC_API_KEY (или MCP_TOKEN_*): токены ролей не из чего получить")
 
     client = client or BitrixClient(os.getenv("BITRIX_WEBHOOK_URL", ""))
     svc = DataService(client)

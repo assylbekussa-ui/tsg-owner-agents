@@ -42,7 +42,7 @@ class Config:
     budget_cents: str = "200"
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls, client: anthropic.Anthropic | None = None) -> "Config":
         """Сначала переменные окружения (Railway), иначе state.json от setup_agents.py."""
         state_path = Path(os.getenv("STATE_PATH", ROOT / "state.json"))
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
@@ -52,17 +52,24 @@ class Config:
             vault_id=os.getenv("AGENTS_VAULT_ID") or state.get("vault_id", ""),
             budget_cents=os.getenv("SESSION_BUDGET_CENTS", "200"),
         )
-        missing = [k for k, v in vars(cfg).items() if not v]
-        if missing:
-            raise RuntimeError("Нет ID агентов: запустите scripts/setup_agents.py или задайте "
-                               "TEAMLEAD_AGENT_ID, AGENTS_ENVIRONMENT_ID, AGENTS_VAULT_ID")
+        if not (cfg.teamlead_id and cfg.environment_id and cfg.vault_id):
+            # ID не заданы — находим агентов, которых создал сервис tsg-bitrix при старте
+            from tsg_bitrix.provision import find_ids
+
+            found = find_ids(client or anthropic.Anthropic())
+            cfg.teamlead_id = cfg.teamlead_id or found["agents"].get("teamlead", "")
+            cfg.environment_id = cfg.environment_id or found.get("environment_id", "")
+            cfg.vault_id = cfg.vault_id or found.get("vault_id", "")
+        if not (cfg.teamlead_id and cfg.environment_id and cfg.vault_id):
+            raise RuntimeError("Агенты ещё не созданы: дождитесь старта сервиса tsg-bitrix "
+                               "(нужны ANTHROPIC_API_KEY и домен) и перезапустите бота")
         return cfg
 
 
 class Teamlead:
     def __init__(self, cfg: Config | None = None, client: anthropic.Anthropic | None = None):
-        self.cfg = cfg or Config.load()
         self.client = client or anthropic.Anthropic()
+        self.cfg = cfg or Config.load(self.client)
         # ключ чата -> [дата, id сессии]; хранится в файле, чтобы переживать перезапуск
         self._path = Path(os.getenv("SESSIONS_PATH", ROOT / "sessions.json"))
         try:
