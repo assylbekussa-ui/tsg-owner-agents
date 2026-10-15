@@ -8,14 +8,19 @@
 - **owner_bot/** — Telegram-бот: голос → Groq Whisper → Тимлид → ответ.
 - **scripts/** — `ask.py` (вопрос из терминала), `inspect_fields.py` (какие поля видят роли), `setup_agents.py` (ручная настройка, обычно не нужна).
 
-## Railway: два сервиса из этого репозитория
+## Railway: один сервис
 
-| Сервис | Variables | Ещё |
-|---|---|---|
-| `tsg-bitrix` | `BITRIX_WEBHOOK_URL`, `ANTHROPIC_API_KEY` | Settings → Networking → Generate Domain |
-| `tsg-owner-bot` | `APP=bot`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_IDS`, `GROQ_API_KEY`, `SUMMARY_TIME=19:00` | домен не нужен |
+На пробном тарифе Railway лимит сервисов исчерпан, поэтому MCP-сервер и бот работают в одном сервисе `tsg-owner-agents` (домен `tsg-owner-agents-production.up.railway.app`, порт 8080).
 
-Токены MCP вручную не нужны: оба конца вычисляют их из `ANTHROPIC_API_KEY` (HMAC, ключ из токена не восстановить). ID агентов бот находит сам по имени. Порядок запуска: сначала `tsg-bitrix` (в логах — «автонастройка: агент TSG · Тимлид: создан»), затем бот.
+Variables сервиса:
+- `BITRIX_WEBHOOK_URL` — входящий вебхук Битрикса;
+- `ANTHROPIC_API_KEY` — Console → Ключи API;
+- `TELEGRAM_BOT_TOKEN` — от @BotFather;
+- `TELEGRAM_ALLOWED_IDS` — ваш Telegram ID (узнать у @userinfobot);
+- `GROQ_API_KEY` — распознавание голосовых;
+- `SUMMARY_TIME=19:00` — вечерняя сводка (необязательно).
+
+Порядок при старте: MCP-сервер → автонастройка агентов («автонастройка: агент TSG · Тимлид: …» в логах) → бот. Токены MCP вручную не нужны: оба конца вычисляют их из `ANTHROPIC_API_KEY` (HMAC, ключ из токена не восстановить). `APP=server` / `APP=bot` — запустить только одну часть, если позже разнесёте по двум сервисам.
 
 Вебхук Битрикса: Разработчикам → Другое → Входящий вебхук под учёткой 239, права CRM, Задачи, Пользователи, Структура компании.
 
