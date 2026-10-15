@@ -49,3 +49,21 @@ def test_answer_progress_and_session_reuse(tmp_path, monkeypatch):
 def test_budget_reached(tmp_path, monkeypatch):
     lead, created, _ = make([NS(type="session.status_idle", stop_reason=NS(type="budget_reached"))], tmp_path, monkeypatch)
     assert "лимит расходов" in lead.ask("c", "сводка")
+
+
+def test_confirmation_flow(tmp_path, monkeypatch):
+    events = [
+        NS(type="agent.mcp_tool_use", id="e1", name="send_message", input={"user_id": 45, "text": "Проверьте OP-14"}),
+        NS(type="session.status_idle", stop_reason=NS(type="requires_action", event_ids=["e1"])),
+        NS(type="agent.message", content=[NS(type="text", text="Сообщение отправлено")]),
+        NS(type="session.status_idle", stop_reason=NS(type="end_turn")),
+    ]
+    lead, _, sent = make(events, tmp_path, monkeypatch)
+    seen = []
+    out = lead.ask("c", "напиши Раушан", confirm=lambda a: seen.append(a) or True)
+    assert seen == [{"tool": "send_message", "input": {"user_id": 45, "text": "Проверьте OP-14"}}]
+    assert sent[-1][1] == [{"type": "user.tool_confirmation", "tool_use_id": "e1", "result": "allow"}]
+    assert out == "Сообщение отправлено"
+    lead2, _, sent2 = make(events, tmp_path, monkeypatch)
+    lead2.ask("c2", "напиши", confirm=None)
+    assert sent2[-1][1][0]["result"] == "deny"  # без кнопки — отказ

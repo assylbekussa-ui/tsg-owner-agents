@@ -112,6 +112,39 @@ def build_role_server(role_key: str, svc: DataService) -> MCPServer:
         async def list_departments() -> list:
             return await run("list_departments", {}, svc.departments())
 
+    if role.disk:
+        folders = "все папки" if "*" in role.disk else ", ".join(role.disk)
+        @server.tool(description=(
+            f"Битрикс-Диск, общий диск компании. Доступные папки: {folders}. "
+            "Без folder_id — список доступных папок верхнего уровня; с folder_id — содержимое папки. "
+            "Возвращает названия, даты и ссылки на файлы в Битриксе (ссылку можно дать человеку)."
+        ))
+        async def disk_list(folder_id: int | None = None) -> dict:
+            return await run("disk_list", {"folder_id": folder_id}, svc.disk_list(role_key, folder_id))
+
+        @server.tool(description="Поиск файлов и папок по части названия в доступных роли папках общего диска.")
+        async def disk_search(query: str, limit: int = 30) -> list:
+            return await run("disk_search", {"query": query}, svc.disk_search(role_key, query, limit))
+
+    if role.writes:
+        @server.tool(description=(
+            "Отправить сотруднику личное сообщение в чат Битрикса от имени владельца кабинета. "
+            "user_id — ID из list_employees. Перед отправкой владелец видит текст и подтверждает его кнопкой; "
+            "если он отказал — сообщение не отправлено, не повторяй без новой просьбы."
+        ))
+        async def send_message(user_id: int, text: str) -> dict:
+            return await run("send_message", {"user_id": user_id, "text": text[:300]},
+                             svc.send_message(role_key, user_id, text))
+
+        @server.tool(description=(
+            "Поставить задачу в Битриксе от имени владельца кабинета. responsible_id — ID исполнителя "
+            "из list_employees; deadline — ISO-дата и время по Алматы, например 2026-10-17T18:00:00+05:00. "
+            "Владелец подтверждает каждую задачу кнопкой; при отказе задача не создаётся."
+        ))
+        async def create_task(responsible_id: int, title: str, description: str, deadline: str | None = None) -> dict:
+            args = {"responsible_id": responsible_id, "title": title, "deadline": deadline}
+            return await run("create_task", args, svc.create_task(role_key, responsible_id, title, description, deadline))
+
     @server.tool(description="Текущие дата и время в Алматы.")
     async def now_almaty() -> str:
         return datetime.now(TZ).strftime("%Y-%m-%d %H:%M, %A")

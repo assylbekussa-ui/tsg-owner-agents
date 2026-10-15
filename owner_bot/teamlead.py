@@ -104,9 +104,16 @@ class Teamlead:
         self._save()
         return session.id
 
-    def ask(self, chat_key: str, text: str, on_progress: Callable[[str], None] | None = None) -> str:
-        """Отправляет вопрос Тимлиду и ждёт конца его хода. Блокирующий вызов."""
+    def ask(self, chat_key: str, text: str, on_progress: Callable[[str], None] | None = None,
+            confirm: Callable[[dict], bool] | None = None) -> str:
+        """Отправляет вопрос Тимлиду и ждёт конца его хода. Блокирующий вызов.
+
+        confirm({"tool": имя, "input": параметры}) -> True/False вызывается для каждого действия,
+        которое требует подтверждения владельца (сообщение, задача). Без confirm — всё отклоняется.
+        """
         progress = on_progress or (lambda _msg: None)
+        approve = confirm or (lambda _action: False)
+        pending: dict[str, dict] = {}  # id события вызова инструмента -> что агент хочет сделать
         session_id = self._session(chat_key)
         stamp = datetime.now(TZ).strftime("%Y-%m-%d %H:%M (%A), Алматы")
         answer: list[str] = []
@@ -119,6 +126,8 @@ class Teamlead:
                 kind = getattr(event, "type", "")
                 if kind == "agent.message":
                     answer.extend(b.text for b in event.content if getattr(b, "type", "") == "text")
+                elif kind in ("agent.mcp_tool_use", "agent.tool_use"):
+                    pending[event.id] = {"tool": getattr(event, "name", ""), "input": getattr(event, "input", {}) or {}}
                 elif kind == "session.thread_created":
                     name = str(getattr(event, "agent_name", "") or "")
                     label = next((v for k, v in AGENT_NAMES.items() if k in name.lower() or v in name), name)
@@ -136,6 +145,15 @@ class Teamlead:
                         answer.append("\n[Исчерпан лимит расходов этой сессии. Следующий вопрос начнёт новую.]")
                         break
                     if reason == "requires_action":
-                        answer.append("\n[Агент запросил подтверждение действия — на этом этапе действия выключены.]")
-                        break
+                        replies = []
+                        for event_id in getattr(event.stop_reason, "event_ids", []) or []:
+                            action = pending.get(event_id, {"tool": "неизвестное действие", "input": {}})
+                            ok = approve(action)
+                            reply = {"type": "user.tool_confirmation", "tool_use_id": event_id,
+                                     "result": "allow" if ok else "deny"}
+                            replies.append(reply)
+                            progress(("✅ подтверждено: " if ok else "❌ отменено: ") + action["tool"])
+                        if replies:
+                            self.client.beta.sessions.events.send(session_id, events=replies)
+                        continue
         return "\n".join(answer).strip() or "Тимлид не вернул текст ответа. Посмотрите сессию в Console → Сессии."

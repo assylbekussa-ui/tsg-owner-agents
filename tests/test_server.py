@@ -45,7 +45,30 @@ def fake_bitrix(request: httpx.Request) -> httpx.Response:
     if method == "crm.item.list":
         return httpx.Response(200, json={"result": {"items": [SHIFT_ITEM]}, "total": 1})
     if method == "user.get":
-        return httpx.Response(200, json={"result": [{"ID": "239", "NAME": "Асылбек", "LAST_NAME": "Кожахметов"}]})
+        return httpx.Response(200, json={"result": [{"ID": "239", "NAME": "Асылбек", "LAST_NAME": "Кожахметов"},
+                                                    {"ID": "45", "NAME": "Раушан", "LAST_NAME": "Баясилова"}]})
+    if method == "im.message.add":
+        return httpx.Response(200, json={"result": 777})
+    if method == "tasks.task.add":
+        return httpx.Response(200, json={"result": {"task": {"id": "901"}}})
+    if method == "disk.storage.getlist":
+        return httpx.Response(200, json={"result": [{"ID": "1", "ROOT_OBJECT_ID": "10"}]})
+    if method == "disk.storage.getchildren":
+        return httpx.Response(200, json={"result": [
+            {"ID": "11", "NAME": "02 Объекты", "TYPE": "folder"},
+            {"ID": "12", "NAME": "06 Финансы", "TYPE": "folder"},
+            {"ID": "13", "NAME": "01 Директор", "TYPE": "folder"}]})
+    if method == "disk.folder.get":
+        fid = str(body.get("id"))
+        names = {"11": "02 Объекты", "12": "06 Финансы", "21": "OP-14"}
+        parent = "11" if fid == "21" else "10"
+        return httpx.Response(200, json={"result": {"ID": fid, "NAME": names.get(fid, "?"), "STORAGE_ID": "1", "PARENT_ID": parent}})
+    if method == "disk.folder.getchildren":
+        fid = str(body.get("id"))
+        kids = {"11": [{"ID": "21", "NAME": "OP-14", "TYPE": "folder"}],
+                "21": [{"ID": "31", "NAME": "График OP-14.xlsx", "TYPE": "file", "DETAIL_URL": "https://x/disk/31"}],
+                "12": [{"ID": "41", "NAME": "ФОТ октябрь.xlsx", "TYPE": "file"}]}
+        return httpx.Response(200, json={"result": kids.get(fid, [])})
     return httpx.Response(200, json={"error": "UNKNOWN", "error_description": method})
 
 
@@ -138,3 +161,38 @@ def test_tool_call_over_http_hides_money():
     assert prod.status_code == 200, prod.text
     assert "ОПУ (ночь)" in prod.text and "135000" not in prod.text
     assert "135000" in buh.text
+
+
+
+def test_only_teamlead_writes_and_only_to_real_people():
+    svc = service()
+    CALLS.clear()
+    res = asyncio.run(svc.send_message("teamlead", 45, "Раушан, проверьте OP-14"))
+    assert res["кому"] == "Раушан Баясилова"
+    assert ("im.message.add", {"DIALOG_ID": "45", "MESSAGE": "Раушан, проверьте OP-14"}) in CALLS
+    with pytest.raises(AccessDenied):
+        asyncio.run(svc.send_message("production", 45, "привет"))
+    with pytest.raises(AccessDenied):
+        asyncio.run(svc.send_message("teamlead", 99999, "кому-то"))
+    task = asyncio.run(svc.create_task("teamlead", 45, "Проверить OP-14", "Невыходы", "2026-10-17T18:00:00+05:00"))
+    assert task["id_задачи"] == "901" and task["ссылка"].endswith("/tasks/task/view/901/")
+
+
+def test_disk_by_role():
+    svc = service()
+    top_prod = [r["название"] for r in asyncio.run(svc.disk_list("production", None))["записи"]]
+    assert top_prod == ["02 Объекты"]  # ни «06 Финансы», ни «01 Директор»
+    top_buh = [r["название"] for r in asyncio.run(svc.disk_list("accountant", None))["записи"]]
+    assert top_buh == ["06 Финансы"]
+    with pytest.raises(AccessDenied):
+        asyncio.run(svc.disk_list("production", 12))  # папка финансов по прямому ID
+    found = asyncio.run(svc.disk_search("production", "op-14"))
+    assert {f["название"] for f in found} == {"OP-14", "График OP-14.xlsx"}
+
+
+def test_write_tools_exist_only_for_teamlead():
+    svc = service()
+    lead = {t.name for t in asyncio.run(build_role_server("teamlead", svc).list_tools())}
+    prod = {t.name for t in asyncio.run(build_role_server("production", svc).list_tools())}
+    assert {"send_message", "create_task", "disk_list"} <= lead
+    assert "send_message" not in prod and "disk_search" in prod

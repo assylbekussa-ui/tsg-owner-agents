@@ -63,11 +63,16 @@ def read_prompt(key: str) -> tuple[dict, str]:
 
 def agent_payload(key: str, base: str) -> dict:
     meta, system = read_prompt(key)
-    tools: list[dict] = [{
+    mcp_tools: dict = {
         "type": "mcp_toolset",
         "mcp_server_name": "bitrix",
-        "default_config": {"permission_policy": {"type": "always_allow"}},  # сервер только на чтение
-    }]
+        "default_config": {"permission_policy": {"type": "always_allow"}},  # чтение — без подтверждения
+    }
+    if key == "teamlead":
+        # Запись в Битрикс — только после кнопки владельца в Telegram
+        mcp_tools["configs"] = [{"name": n, "permission_policy": {"type": "always_ask"}}
+                                for n in ("send_message", "create_task")]
+    tools: list[dict] = [mcp_tools]
     if meta.get("toolset") == "true":  # бухгалтеру нужен код для расчётов, без интернета
         tools.append({
             "type": "agent_toolset_20260401",

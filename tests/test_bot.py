@@ -27,9 +27,12 @@ class FakeLead:
         self.asked: list[tuple[str, str]] = []
         self.resets: list[str] = []
 
-    def ask(self, chat_key, text, progress):
+    def ask(self, chat_key, text, progress, confirm=None):
         self.asked.append((chat_key, text))
         progress("подключён агент: Производство")
+        if "напиши" in text and confirm:
+            ok = confirm({"tool": "send_message", "input": {"user_id": 45, "text": "Раушан, проверьте OP-14"}})
+            return "Отправлено" if ok else "Отменено владельцем"
         return "ФОТ: 5 830 000 ₸\nТребует решения: OP-14"
 
     def reset(self, chat_key):
@@ -91,3 +94,26 @@ def test_buttons():
 def test_long_answer_is_split():
     parts = split_text(("строка ответа\n" * 600).strip())
     assert len(parts) > 1 and all(len(p) <= 4000 for p in parts)
+
+
+def test_write_action_waits_for_button():
+    SENT.clear()
+    bot, lead = make_bot()
+    bot.names = {"45": "Баясилова Раушан (директор производства)"}
+
+    async def scenario():
+        task = asyncio.create_task(bot.handle(msg(OWNER, text="напиши Раушан про OP-14")))
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if bot.waiting:
+                break
+        assert any("Баясилова Раушан" in t and "OP-14" in t for t in texts())  # черновик показан
+        code = next(iter(bot.waiting))
+        await bot.handle({"update_id": 2, "callback_query": {"id": "q1", "from": {"id": 555}, "data": f"ok:{code}"}})
+        assert bot.waiting  # чужая кнопка не считается
+        await bot.handle({"update_id": 3, "callback_query": {"id": "q2", "from": {"id": OWNER},
+                          "data": f"no:{code}", "message": {"message_id": 9, "chat": {"id": OWNER}}}})
+        await task
+
+    asyncio.run(scenario())
+    assert any("Отменено владельцем" in t for t in texts())

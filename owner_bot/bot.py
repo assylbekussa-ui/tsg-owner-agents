@@ -47,6 +47,21 @@ def split_text(text: str, limit: int = LIMIT) -> list[str]:
     return parts + ([text] if text else [])
 
 
+def describe_action(action: dict, names: dict[str, str]) -> str:
+    """Черновик действия для владельца: кому, что, срок."""
+    args = action.get("input") or {}
+    tool = action.get("tool", "")
+    if tool == "send_message":
+        who = names.get(str(args.get("user_id")), f"ID {args.get('user_id')}")
+        return f"✉️ Сообщение в Битрикс-чат\nКому: {who}\n\n{args.get('text', '')}"
+    if tool == "create_task":
+        who = names.get(str(args.get("responsible_id")), f"ID {args.get('responsible_id')}")
+        deadline = args.get("deadline") or "без срока"
+        return (f"📋 Задача в Битриксе\nИсполнитель: {who}\nСрок: {deadline}\n"
+                f"Название: {args.get('title', '')}\n\n{args.get('description', '')}")
+    return f"Действие: {tool}\n{args}"
+
+
 def parse_ids(raw: str) -> set[int]:
     return {int(x) for x in raw.replace(" ", "").split(",") if x}
 
@@ -89,18 +104,65 @@ class Telegram:
 class OwnerBot:
     def __init__(self, tg: Telegram, lead: Teamlead, http: httpx.AsyncClient, allowed: set[int],
                  ask_fn: Callable[[str, str, Callable[[str], None]], str] | None = None,
-                 stt: Callable[[bytes], Awaitable[str]] | None = None):
+                 stt: Callable[[bytes], Awaitable[str]] | None = None,
+                 names_loader: Callable[[], Awaitable[dict[str, str]]] | None = None):
         self.tg, self.lead, self.http, self.allowed = tg, lead, http, allowed
         self.ask_fn = ask_fn or lead.ask
         self.stt = stt or (lambda audio: transcribe(audio, http))
+        self.names_loader = names_loader
         self.voice_on: set[int] = set()
         self.locks: dict[int, asyncio.Lock] = {}
+        self.waiting: dict[str, asyncio.Future] = {}  # код кнопки -> ответ владельца
+        self.names: dict[str, str] = {}  # ID сотрудника -> имя, для черновиков
+        self.confirm_timeout = 15 * 60
 
     def journal(self, user_id: int, kind: str, text: str) -> None:
         print(json.dumps({"ts": datetime.now(TZ).isoformat(timespec="seconds"), "user": user_id,
                           "kind": kind, "text": text[:500]}, ensure_ascii=False), flush=True)
 
+    async def on_button(self, query: dict) -> None:
+        user_id = (query.get("from") or {}).get("id")
+        if user_id not in self.allowed:
+            return
+        data = query.get("data", "")
+        verdict, _, code = data.partition(":")
+        fut = self.waiting.pop(code, None)
+        msg = query.get("message") or {}
+        if fut and not fut.done():
+            fut.set_result(verdict == "ok")
+            mark = "✅ Отправлено на выполнение" if verdict == "ok" else "❌ Отменено"
+        else:
+            mark = "Это подтверждение уже не действует"
+        try:
+            await self.tg.call("answerCallbackQuery", callback_query_id=query["id"], text=mark)
+            if msg:
+                await self.tg.call("editMessageReplyMarkup", chat_id=msg["chat"]["id"],
+                                   message_id=msg["message_id"], reply_markup={"inline_keyboard": []})
+                await self.tg.send(msg["chat"]["id"], mark)
+        except Exception:
+            pass
+
+    async def ask_confirmation(self, chat_id: int, action: dict) -> bool:
+        code = f"{chat_id}-{len(self.waiting)}-{id(action)}"
+        fut = asyncio.get_running_loop().create_future()
+        self.waiting[code] = fut
+        keyboard = {"inline_keyboard": [[{"text": "✅ Отправить", "callback_data": f"ok:{code}"},
+                                         {"text": "❌ Отмена", "callback_data": f"no:{code}"}]]}
+        await self.tg.send(chat_id, describe_action(action, self.names), reply_markup=keyboard)
+        self.journal(chat_id, "черновик действия", describe_action(action, self.names))
+        try:
+            ok = await asyncio.wait_for(fut, self.confirm_timeout)
+        except asyncio.TimeoutError:
+            self.waiting.pop(code, None)
+            await self.tg.send(chat_id, "⏱ Нет ответа 15 минут — действие отменено.")
+            ok = False
+        self.journal(chat_id, "решение владельца", "отправить" if ok else "отмена")
+        return ok
+
     async def handle(self, update: dict) -> None:
+        if update.get("callback_query"):
+            await self.on_button(update["callback_query"])
+            return
         msg = update.get("message") or {}
         user_id = (msg.get("from") or {}).get("id")
         chat_id = (msg.get("chat") or {}).get("id")
@@ -163,9 +225,13 @@ class OwnerBot:
                 text = base + "\n" + "\n".join(f"• {s}" for s in steps[-6:])
                 asyncio.run_coroutine_threadsafe(self.tg.edit(chat_id, status["message_id"], text), loop)
 
+        def confirm(action: dict) -> bool:  # вызывается из потока с запросом к Тимлиду
+            return asyncio.run_coroutine_threadsafe(self.ask_confirmation(chat_id, action), loop).result()
+
+        await self._load_names()
         typing = asyncio.create_task(self._typing(chat_id))
         try:
-            reply = await asyncio.to_thread(self.ask_fn, str(chat_id), question, progress)
+            reply = await asyncio.to_thread(self.ask_fn, str(chat_id), question, progress, confirm)
         except Exception as exc:  # сбой API не должен ронять бота
             log.exception("Тимлид")
             reply = f"Не получилось получить ответ Тимлида: {exc}"
@@ -180,6 +246,14 @@ class OwnerBot:
             except Exception as exc:
                 log.warning("TTS: %s", exc)
                 await self.tg.send(chat_id, "Голосовую версию сделать не получилось.")
+
+    async def _load_names(self) -> None:
+        if self.names or not self.names_loader:
+            return
+        try:
+            self.names = await self.names_loader()
+        except Exception as exc:
+            log.warning("справочник сотрудников: %s", exc)
 
     async def _typing(self, chat_id: int) -> None:
         while True:
@@ -208,7 +282,7 @@ class OwnerBot:
         while True:
             try:
                 updates = await self.tg.call("getUpdates", offset=offset, timeout=50,
-                                             allowed_updates=["message"])
+                                             allowed_updates=["message", "callback_query"])
             except Exception as exc:
                 log.warning("getUpdates: %s", exc)
                 await asyncio.sleep(5)
@@ -230,7 +304,18 @@ async def main() -> None:
     if not allowed:
         raise SystemExit("TELEGRAM_ALLOWED_IDS пуст: бот никому не будет отвечать")
     async with httpx.AsyncClient() as http:
-        bot = OwnerBot(Telegram(os.environ["TELEGRAM_BOT_TOKEN"], http), Teamlead(), http, allowed)
+        names_loader = None
+        if os.getenv("BITRIX_WEBHOOK_URL"):
+            from tsg_bitrix.bitrix import BitrixClient
+            from tsg_bitrix.data import DataService
+
+            svc = DataService(BitrixClient(os.environ["BITRIX_WEBHOOK_URL"]))
+
+            async def names_loader() -> dict[str, str]:
+                return {str(u["id"]): f"{u['имя']} ({u.get('должность') or 'без должности'})" for u in await svc.users()}
+
+        bot = OwnerBot(Telegram(os.environ["TELEGRAM_BOT_TOKEN"], http), Teamlead(), http, allowed,
+                       names_loader=names_loader)
         tasks = [bot.run()]
         if os.getenv("SUMMARY_TIME"):
             ids = parse_ids(os.getenv("SUMMARY_CHAT_IDS", "")) or allowed

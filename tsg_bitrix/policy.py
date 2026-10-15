@@ -74,17 +74,23 @@ class Role:
     entities: dict[str, bool] = field(default_factory=dict)
     tasks: bool = False
     directory: bool = True  # сотрудники и отделы портала
+    writes: bool = False  # сообщения и задачи в Битриксе (каждое — с подтверждением владельца)
+    # Папки общего диска, к которым есть доступ: начало названия папки верхнего уровня.
+    # Полные названия, а не номера: в старой и новой структуре номера значат разное
+    # (02 — «Объекты» и «HR», 01 — «Компания» и «Директор»). "*" — все папки.
+    disk: tuple[str, ...] = ()
 
 
 ROLES: dict[str, Role] = {
     r.key: r
     for r in [
-        Role("teamlead", "Тимлид", {"objects": False}, tasks=True),
+        Role("teamlead", "Тимлид", {"objects": False}, tasks=True, writes=True, disk=("*",)),
         Role(
             "production",
             "Агент производства",
             {"objects": False, "shifts": False, "complaints": False, "nps": False, "audits": False},
             tasks=True,
+            disk=("00 Общее", "01 Компания", "02 Объекты", "03 Производство", "Обучение"),
         ),
         Role(
             "account",
@@ -92,11 +98,13 @@ ROLES: dict[str, Role] = {
             # Решение 14.10.2026: аккаунт видит сметы полностью, включая ОФ / НЕ ОФ.
             {"objects": True, "shifts": True, "complaints": True, "nps": True, "audits": True, "contracts": True},
             tasks=True,
+            disk=("00 Общее", "01 Компания", "02 Объекты", "04 Договоры", "04 Аккаунт"),
         ),
         Role(
             "accountant",
             "Бухгалтер",
             {"objects": True, "shifts": True, "contracts": True, "accounting": True},
+            disk=("00 Общее", "01 Компания", "04 Договоры", "06 Финансы", "06 Бухгалтерия"),
         ),
         # Этап 4: HR, продажи, аналитик, юрист. Наборы уже заданы, агенты подключаются позже.
         Role(

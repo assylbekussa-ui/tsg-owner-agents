@@ -24,8 +24,16 @@ READ_ONLY_METHODS = frozenset(
         "tasks.task.get",
         "user.get",
         "department.get",
+        "disk.storage.getlist",
+        "disk.storage.getchildren",
+        "disk.folder.getchildren",
+        "disk.folder.get",
+        "disk.file.get",
     }
 )
+# Запись: только эти два действия и только через write() — его вызывают инструменты Тимлида,
+# каждый вызов которых владелец подтверждает кнопкой в Telegram.
+WRITE_METHODS = frozenset({"im.message.add", "tasks.task.add"})
 
 PAGE = 50  # Битрикс отдаёт по 50 записей за запрос
 
@@ -49,9 +57,17 @@ class BitrixClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def write(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method not in WRITE_METHODS:
+            raise MethodNotAllowed(f"Метод {method} запрещён для записи")
+        return await self._send(method, params)
+
     async def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if method not in READ_ONLY_METHODS:
             raise MethodNotAllowed(f"Метод {method} запрещён: сервер работает только на чтение")
+        return await self._send(method, params)
+
+    async def _send(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
         for attempt in range(4):
             async with self._lock:
                 resp = await self._http.post(f"{self.base}{method}.json", json=params or {})

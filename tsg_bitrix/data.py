@@ -29,7 +29,7 @@ class AccessDenied(PermissionError):
     pass
 
 
-class DataService:
+class _Core:
     def __init__(self, client: BitrixClient, cache_ttl: int = 600):
         self.bx = client
         self.ttl = cache_ttl
@@ -192,3 +192,112 @@ class DataService:
             return [{"id": d.get("ID"), "название": d.get("NAME"), "родитель": d.get("PARENT"),
                      "руководитель_id": d.get("UF_HEAD")} for d in deps]
         return await self._cached("departments", load)
+
+
+class DiskAndWrites:
+    """Диск по ролям и запись (сообщения, задачи) — подмешивается в DataService."""
+
+    # ---------- диск ----------
+    async def _common_storage(self) -> dict[str, Any]:
+        async def load():
+            data = await self.bx.call("disk.storage.getlist", {"filter": {"ENTITY_TYPE": "common"}})
+            storages = data.get("result", [])
+            if not storages:
+                raise AccessDenied("Общий диск компании не найден")
+            return storages[0]
+        return await self._cached("disk:storage", load)
+
+    @staticmethod
+    def _allowed_top(role: Role, name: str) -> bool:
+        return "*" in role.disk or any(name.strip().lower().startswith(p.lower()) for p in role.disk)
+
+    async def _top_folder_name(self, folder_id: int) -> str:
+        """Название папки верхнего уровня общего диска, внутри которой лежит folder_id."""
+        root = await self._common_storage()
+        current = await self.bx.call("disk.folder.get", {"id": folder_id})
+        item = current.get("result", {})
+        for _ in range(30):
+            if str(item.get("STORAGE_ID")) != str(root["ID"]):
+                raise AccessDenied("Папка не на общем диске компании")
+            if str(item.get("PARENT_ID")) == str(root["ROOT_OBJECT_ID"]):
+                return item.get("NAME", "")
+            item = (await self.bx.call("disk.folder.get", {"id": item["PARENT_ID"]})).get("result", {})
+        raise AccessDenied("Слишком глубокая вложенность папок")
+
+    @staticmethod
+    def _disk_row(it: dict[str, Any]) -> dict[str, Any]:
+        return {"id": it.get("ID"), "название": it.get("NAME"),
+                "тип": "папка" if it.get("TYPE") == "folder" else "файл",
+                "размер_байт": it.get("SIZE"), "изменён": it.get("UPDATE_TIME"),
+                "ссылка": it.get("DETAIL_URL")}
+
+    async def disk_list(self, role_key: str, folder_id: int | None) -> dict[str, Any]:
+        role = ROLES[role_key]
+        if not role.disk:
+            raise AccessDenied(f"У роли «{role.title}» нет доступа к Диску.")
+        root = await self._common_storage()
+        if not folder_id:
+            data = await self.bx.call("disk.storage.getchildren", {"id": root["ID"]})
+            items = [i for i in data.get("result", []) if i.get("TYPE") == "folder" and self._allowed_top(role, i.get("NAME", ""))]
+            return {"папка": "общий диск (верхний уровень)", "записи": [self._disk_row(i) for i in items]}
+        top = await self._top_folder_name(folder_id)
+        if not self._allowed_top(role, top):
+            raise AccessDenied("Эта папка доступна другому отделу.")
+        data = await self.bx.call("disk.folder.getchildren", {"id": folder_id})
+        return {"папка_верхнего_уровня": top, "записи": [self._disk_row(i) for i in data.get("result", [])]}
+
+    async def disk_search(self, role_key: str, query: str, limit: int = 30) -> list[dict[str, Any]]:
+        role = ROLES[role_key]
+        q = query.strip().lower()
+        top = (await self.disk_list(role_key, None))["записи"]
+        found: list[dict[str, Any]] = []
+        queue = [(t["id"], t["название"]) for t in top]
+        visited = 0
+        while queue and len(found) < limit and visited < 400:
+            fid, path = queue.pop(0)
+            data = await self.bx.call("disk.folder.getchildren", {"id": fid})
+            for it in data.get("result", []):
+                visited += 1
+                row = self._disk_row(it) | {"путь": f"{path}/{it.get('NAME')}"}
+                if q in str(it.get("NAME", "")).lower():
+                    found.append(row)
+                if it.get("TYPE") == "folder":
+                    queue.append((it["ID"], row["путь"]))
+        return found
+
+    # ---------- запись ----------
+    async def _user(self, user_id: int) -> dict[str, Any]:
+        for u in await self.users():
+            if str(u["id"]) == str(user_id):
+                return u
+        raise AccessDenied(f"Сотрудник с ID {user_id} не найден среди активных пользователей портала.")
+
+    def _require_writes(self, role_key: str) -> None:
+        if not ROLES[role_key].writes:
+            raise AccessDenied("Эта роль не может писать в Битрикс.")
+
+    async def send_message(self, role_key: str, user_id: int, text: str) -> dict[str, Any]:
+        self._require_writes(role_key)
+        if not text.strip():
+            raise AccessDenied("Пустое сообщение не отправляется.")
+        user = await self._user(user_id)
+        data = await self.bx.write("im.message.add", {"DIALOG_ID": str(user_id), "MESSAGE": text})
+        return {"отправлено": True, "кому": user["имя"], "id_сообщения": data.get("result")}
+
+    async def create_task(self, role_key: str, responsible_id: int, title: str, description: str,
+                          deadline: str | None) -> dict[str, Any]:
+        self._require_writes(role_key)
+        user = await self._user(responsible_id)
+        fields: dict[str, Any] = {"TITLE": title, "DESCRIPTION": description, "RESPONSIBLE_ID": responsible_id}
+        if deadline:
+            fields["DEADLINE"] = deadline
+        data = await self.bx.write("tasks.task.add", {"fields": fields})
+        task = (data.get("result") or {}).get("task", {})
+        portal = self.bx.base.split("/rest/")[0]
+        tid = task.get("id")
+        return {"создана": True, "исполнитель": user["имя"], "id_задачи": tid,
+                "ссылка": f"{portal}/company/personal/user/{responsible_id}/tasks/task/view/{tid}/" if tid else None}
+
+
+class DataService(_Core, DiskAndWrites):
+    """Чтение Битрикса с фильтрацией по ролям, Диск по ролям и запись с подтверждением."""
