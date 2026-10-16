@@ -53,22 +53,36 @@ async def run_bot() -> None:
             await asyncio.sleep(60)
 
 
+async def run_hr_sync() -> None:
+    """Кандидаты -> сотрудники и переход по стажу. Запускается, только если задан BITRIX_HRSYNC_WEBHOOK."""
+    if not os.getenv("BITRIX_HRSYNC_WEBHOOK"):
+        log.info("BITRIX_HRSYNC_WEBHOOK не задан — синхронизация сотрудников выключена")
+        return
+    from hr_sync.sync import run as hr_sync_run
+
+    while True:  # сбой синхронизации не должен ронять сервер или бота
+        try:
+            await hr_sync_run()
+        except (Exception, SystemExit) as exc:
+            log.error("hr_sync остановился: %s — перезапуск через 60 с", exc)
+            await asyncio.sleep(60)
+
+
 async def main() -> None:
     app = os.getenv("APP", "all").lower()
-    if app == "hrsync":  # кандидаты -> сотрудники и переход по стажу, без сервера и бота
-        from hr_sync.sync import run as hr_sync_run
-
-        await hr_sync_run()
+    if app == "hrsync":  # отдельный сервис только для синхронизации
+        await run_hr_sync()
         return
+    sync_task = asyncio.create_task(run_hr_sync())
     if app == "bot":
-        await run_bot()
+        await asyncio.gather(sync_task, run_bot())
         return
     server = asyncio.create_task(run_server())
     if app != "server":
         await run_provision()
-        await asyncio.gather(server, run_bot())
+        await asyncio.gather(server, sync_task, run_bot())
     else:
-        await asyncio.gather(server, run_provision())
+        await asyncio.gather(server, sync_task, run_provision())
 
 
 if __name__ == "__main__":
