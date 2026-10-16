@@ -55,6 +55,11 @@ async def run_bot() -> None:
 
 async def main() -> None:
     app = os.getenv("APP", "all").lower()
+    if app == "hrsync":  # кандидаты -> сотрудники и переход по стажу, без сервера и бота
+        from hr_sync.sync import run as hr_sync_run
+
+        await hr_sync_run()
+        return
     if app == "bot":
         await run_bot()
         return
